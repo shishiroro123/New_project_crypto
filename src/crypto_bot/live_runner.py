@@ -35,7 +35,7 @@ import pandas as pd
 from crypto_bot.alerts import TelegramAlerter
 from crypto_bot.backtest.runner import CostModel
 from crypto_bot.config import BotConfig, ExecutionMode, Secrets
-from crypto_bot.data.exchange import make_binance
+from crypto_bot.data.exchange import make_exchange
 from crypto_bot.data.market_data import fetch_history
 from crypto_bot.execution.base import ExecutorBase, OrderRequest, Side
 from crypto_bot.execution.live import LiveExecutor
@@ -309,13 +309,13 @@ def build_runner(
     alerter = TelegramAlerter(secrets.telegram_bot_token, secrets.telegram_chat_id)
 
     if config.execution.mode == ExecutionMode.LIVE:
-        client = make_binance(secrets, testnet=False)
+        client = make_exchange(secrets=secrets, testnet=False)
         executor: ExecutorBase = LiveExecutor(client)
     elif config.execution.mode == ExecutionMode.TESTNET:
-        client = make_binance(secrets, testnet=True)
+        client = make_exchange(secrets=secrets, testnet=True)
         executor = LiveExecutor(client)
     else:
-        client = make_binance(secrets, testnet=False)  # public market data only
+        client = make_exchange(secrets=secrets, testnet=False)  # public market data only
         cost = CostModel(
             fee_rate=config.execution.fee_rate, slippage_bps=config.execution.slippage_bps
         )

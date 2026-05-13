@@ -79,9 +79,18 @@ class Secrets(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    exchange_name: str = "binance"  # binance | binanceus | kraken
+    # Path to a CA bundle used to verify TLS for the exchange API. Useful in
+    # environments that perform TLS interception (corporate proxies, sandboxes).
+    # When set, this overrides certifi's default bundle on the ccxt session.
+    ca_bundle: str = ""
+
     binance_api_key: str = ""
     binance_api_secret: str = ""
     binance_testnet: bool = True
+
+    kraken_api_key: str = ""
+    kraken_api_secret: str = ""
 
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""

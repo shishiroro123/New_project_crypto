@@ -12,7 +12,7 @@ from rich.table import Table
 
 from crypto_bot.backtest.runner import CostModel, run_backtest
 from crypto_bot.config import BotConfig, Secrets
-from crypto_bot.data.exchange import make_binance
+from crypto_bot.data.exchange import make_exchange
 from crypto_bot.data.market_data import fetch_history
 from crypto_bot.live_runner import build_runner
 from crypto_bot.logging_setup import configure as configure_logging
@@ -52,7 +52,7 @@ def fetch(
     """Download (or update cached) OHLCV for all configured symbols + the regime reference."""
     cfg = _load_config(config)
     secrets = Secrets()
-    client = make_binance(secrets, testnet=False)  # public endpoints don't need testnet
+    client = make_exchange(secrets=secrets, testnet=False)  # public endpoints don't need testnet
 
     start_dt = datetime.fromisoformat(start).replace(tzinfo=UTC)
     end_dt = datetime.fromisoformat(end).replace(tzinfo=UTC) if end else None
@@ -97,7 +97,7 @@ def backtest(
     cfg = _load_config(config)
     secrets = Secrets()
     data_dir = Path(secrets.data_dir)
-    client = make_binance(secrets, testnet=False)
+    client = make_exchange(secrets=secrets, testnet=False)
 
     start_dt = datetime.fromisoformat(cfg.backtest.start).replace(tzinfo=UTC)
     end_dt = (
@@ -181,7 +181,7 @@ def walkforward(
     cfg = _load_config(config)
     secrets = Secrets()
     data_dir = Path(secrets.data_dir)
-    client = make_binance(secrets, testnet=False)
+    client = make_exchange(secrets=secrets, testnet=False)
 
     start_dt = datetime.fromisoformat(cfg.backtest.start).replace(tzinfo=UTC)
     end_dt = (
@@ -248,6 +248,104 @@ def walkforward(
         f"return={combined.get('total_return', 0):.2%} "
         f"max_dd={combined.get('max_drawdown', 0):.2%}"
     )
+
+
+@app.command()
+def robustness(
+    config: Path = typer.Option(Path("config/default.yaml"), "--config", "-c"),
+    n_folds: int = typer.Option(5, "--folds", min=2, max=20),
+) -> None:
+    """Fixed-params walk-forward (no grid search) — honest robustness check.
+
+    Splits history into N contiguous chunks and evaluates the SAME default
+    parameters on each. Unlike `walkforward`, this avoids the optimisation
+    overfit that an IS grid-search would introduce: every fold sees the same
+    strategy you would actually deploy. Good for sanity-checking edge stability.
+    """
+    cfg = _load_config(config)
+    secrets = Secrets()
+    data_dir = Path(secrets.data_dir)
+    client = make_exchange(secrets=secrets)
+
+    start_dt = datetime.fromisoformat(cfg.backtest.start).replace(tzinfo=UTC)
+    end_dt = (
+        datetime.fromisoformat(cfg.backtest.end).replace(tzinfo=UTC) if cfg.backtest.end else None
+    )
+
+    regime_series = None
+    if cfg.strategy.regime.enabled:
+        ref_df = fetch_history(
+            client,
+            cfg.strategy.regime.reference_symbol,
+            cfg.strategy.regime.reference_timeframe,
+            start_dt,
+            end_dt,
+            data_dir,
+        )
+        regime_series = regime_filter(ref_df["close"], cfg.strategy.regime.ma_period)
+
+    params = DonchianParams(
+        entry_lookback=cfg.strategy.entry_lookback,
+        exit_lookback=cfg.strategy.exit_lookback,
+        atr_period=cfg.strategy.atr_period,
+        atr_stop_multiplier=cfg.strategy.atr_stop_multiplier,
+    )
+    sizing = SizingParams(
+        risk_per_trade=cfg.risk.risk_per_trade,
+        max_position_pct=cfg.risk.max_position_pct,
+    )
+    cost = CostModel(fee_rate=cfg.execution.fee_rate, slippage_bps=cfg.execution.slippage_bps)
+
+    for sym in cfg.strategy.symbols:
+        df = fetch_history(client, sym, cfg.strategy.timeframe, start_dt, end_dt, data_dir)
+        if df.empty:
+            console.print(f"[yellow]no data for {sym}[/yellow]")
+            continue
+        df = df.iloc[cfg.backtest.warmup_bars :]
+        fold = len(df) // n_folds
+        if fold < 50:
+            console.print(f"[red]not enough data for {sym} at {n_folds} folds[/red]")
+            continue
+
+        table = Table(title=f"Fixed-params robustness ({sym}, entry={params.entry_lookback}/"
+                            f"exit={params.exit_lookback})", show_lines=True)
+        for col in ("fold", "period", "sharpe", "return", "max DD", "trades"):
+            table.add_column(col)
+
+        sharpes: list[float] = []
+        for i in range(n_folds):
+            chunk = df.iloc[i * fold : (i + 1) * fold]
+            if chunk.empty:
+                continue
+            rg = (
+                align_regime(chunk.index, regime_series)
+                if regime_series is not None
+                else None
+            )
+            signals = generate_signals(chunk, params, rg)
+            r = run_backtest(
+                signals,
+                cfg.risk.initial_capital,
+                sizing,
+                cost,
+                cfg.strategy.timeframe,
+            )
+            m = r.metrics
+            sharpes.append(m.get("sharpe", 0.0))
+            table.add_row(
+                str(i + 1),
+                f"{chunk.index[0]:%Y-%m} -> {chunk.index[-1]:%Y-%m}",
+                f"{m.get('sharpe', 0):.2f}",
+                f"{m.get('total_return', 0):.2%}",
+                f"{m.get('max_drawdown', 0):.2%}",
+                f"{int(m.get('n_trades', 0))}",
+            )
+        avg = sum(sharpes) / len(sharpes) if sharpes else 0.0
+        pos = sum(1 for s in sharpes if s > 0)
+        console.print(table)
+        console.print(
+            f"[bold]{sym}: avg Sharpe = {avg:.2f}  ({pos}/{len(sharpes)} folds positive)[/bold]\n"
+        )
 
 
 @app.command()
