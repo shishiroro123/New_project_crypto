@@ -89,7 +89,40 @@ crypto-bot news --currencies BTC,ETH
 
 # 9. tests unitaires (22 tests)
 pytest -q
+
+# 10. dashboard web (Streamlit) avec donnees virtuelles
+pip install -e ".[ui]"
+crypto-bot seed-demo                      # peuple data/state_demo.sqlite avec ~30 trades virtuels
+crypto-bot dashboard --state data/state_demo.sqlite
+# puis ouvrir http://localhost:8501
 ```
+
+## Dashboard Streamlit
+
+Interface web read-only pour suivre le bot en temps reel. Ne place aucun ordre, lit uniquement `data/state.sqlite`.
+
+```bash
+# 1. Installer les deps UI
+pip install -e ".[ui]"
+
+# 2a. Voir un dashboard rempli de donnees virtuelles (avant d'avoir lance le bot)
+crypto-bot seed-demo
+crypto-bot dashboard --state data/state_demo.sqlite
+
+# 2b. Voir le dashboard du vrai bot (paper / testnet / live)
+crypto-bot dashboard         # lit data/state.sqlite par defaut
+```
+
+Vue (toutes les sections auto-refresh toutes les 30s) :
+
+- **KPIs en haut** : equity courante, P&L du jour, P&L total realise, positions ouvertes, heartbeat du runner
+- **Equity curve** : courbe d'equity + peak (haut historique) pour visualiser les drawdowns
+- **Open positions** : qty, entry, stop, risk %, notional, entry time
+- **Trade statistics** : win rate, avg win / loss, profit factor, expectancy, max drawdown
+- **Distribution P&L** : histogramme des trades
+- **Recent trades** : table sortable avec P&L colore (vert / rouge)
+
+Le dashboard ecoute par defaut sur `0.0.0.0:8501`. Sur ton VPS : `crypto-bot dashboard --host 0.0.0.0 --port 8501` puis acceder via tunnel SSH ou reverse proxy nginx + basic auth.
 
 ## Déploiement VPS
 
@@ -150,13 +183,14 @@ Tout est centralisé dans `config/default.yaml`. Paramètres clés :
 - [x] Live runner avec polling, kill switch, signal handling SIGTERM/SIGINT
 - [x] Alertes Telegram (entry/exit/error/daily summary)
 - [x] Module news (CryptoPanic + Binance announcements)
-- [x] CLI complète : fetch / backtest / walkforward / run / news / status
+- [x] CLI complète : fetch / backtest / walkforward / run / news / status / dashboard / seed-demo
+- [x] Dashboard Streamlit (equity curve, positions, P&L, stats, distribution)
 - [x] Docker + 22 tests unitaires + tests d'intégration end-to-end
 
 À venir (v1.1 et plus) :
 - [ ] Multi-symbol portfolio runner (allocation dynamique entre signaux concurrents)
 - [ ] Sentiment scoring NLP sur les news → modulation du sizing
-- [ ] Dashboard Streamlit / Prometheus exporter pour Grafana
+- [ ] Prometheus exporter pour Grafana (en plus du dashboard Streamlit)
 - [ ] WebSocket pour timeframes < 15min
 - [ ] Optimisation bayésienne des params (Optuna) en remplacement de la grille
 - [ ] Monitoring on-chain (whale alerts, flux exchange)

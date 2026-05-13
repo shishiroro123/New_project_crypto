@@ -334,5 +334,128 @@ def status(
     console.print(ttable)
 
 
+@app.command()
+def dashboard(
+    state_path: Path = typer.Option(Path("data/state.sqlite"), "--state"),
+    port: int = typer.Option(8501, "--port"),
+    host: str = typer.Option("0.0.0.0", "--host"),
+) -> None:
+    """Launch the Streamlit dashboard (read-only view of state.sqlite)."""
+    import shutil
+    import subprocess
+
+    streamlit_bin = shutil.which("streamlit")
+    if streamlit_bin is None:
+        console.print(
+            "[red]streamlit is not installed.[/red] Install UI deps:\n"
+            "  pip install -e '.[ui]'"
+        )
+        raise typer.Exit(code=1)
+
+    app_path = Path(__file__).resolve().parents[2] / "dashboard" / "app.py"
+    if not app_path.exists():
+        console.print(f"[red]dashboard app not found at {app_path}[/red]")
+        raise typer.Exit(code=1)
+
+    cmd = [
+        streamlit_bin,
+        "run",
+        str(app_path),
+        "--server.port",
+        str(port),
+        "--server.address",
+        host,
+        "--browser.gatherUsageStats",
+        "false",
+        "--",
+        "--state",
+        str(state_path),
+    ]
+    console.print(f"[green]Starting dashboard at http://{host}:{port}[/green]")
+    subprocess.run(cmd, check=False)
+
+
+@app.command()
+def seed_demo(
+    state_path: Path = typer.Option(Path("data/state_demo.sqlite"), "--state"),
+    starting_capital: float = typer.Option(500.0, "--capital"),
+    n_bars: int = typer.Option(1200, "--bars"),
+    seed: int = typer.Option(42, "--seed"),
+) -> None:
+    """Populate a demo state.sqlite with virtual trades so the dashboard has data.
+
+    Runs a backtest on synthetic OHLCV (deterministic, seeded) and injects the
+    resulting trades + equity snapshots into the chosen state DB. Use this to
+    preview the dashboard before the bot has accumulated real history.
+    """
+    import numpy as np
+
+    from crypto_bot.backtest.runner import CostModel, run_backtest
+    from crypto_bot.risk.sizing import SizingParams
+    from crypto_bot.state import ClosedTrade, StateStore
+    from crypto_bot.strategy.donchian import DonchianParams, generate_signals
+
+    rng = np.random.default_rng(seed)
+    half = n_bars // 2
+    drift = np.concatenate([np.full(half, 0.0012), np.full(n_bars - half, -0.0008)])
+    log_returns = drift + rng.normal(0, 0.012, size=n_bars)
+    close = 50_000.0 * np.exp(np.cumsum(log_returns))
+    high = close * (1 + rng.uniform(0.001, 0.012, size=n_bars))
+    low = close * (1 - rng.uniform(0.001, 0.012, size=n_bars))
+    open_ = np.concatenate([[close[0]], close[:-1]])
+    idx = pd.date_range(end=pd.Timestamp.now(tz="UTC"), periods=n_bars, freq="4h")
+    df = pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close, "volume": 1.0},
+        index=idx,
+    )
+
+    params = DonchianParams(entry_lookback=20, exit_lookback=10, atr_period=14)
+    signals = generate_signals(df, params)
+    result = run_backtest(
+        signals,
+        initial_capital=starting_capital,
+        sizing=SizingParams(risk_per_trade=0.01, max_position_pct=0.5),
+        cost=CostModel(fee_rate=0.001, slippage_bps=5.0),
+        timeframe="4h",
+    )
+
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    if state_path.exists():
+        state_path.unlink()
+    store = StateStore(state_path)
+    store.set_meta("started_at", df.index[0].isoformat())
+
+    for t in result.trades:
+        store.record_trade(
+            ClosedTrade(
+                symbol="BTC/USDT",
+                entry_time=t.entry_time.to_pydatetime() if hasattr(t.entry_time, "to_pydatetime") else t.entry_time,
+                exit_time=t.exit_time.to_pydatetime() if hasattr(t.exit_time, "to_pydatetime") else t.exit_time,
+                entry_price=t.entry_price,
+                exit_price=t.exit_price,
+                qty=t.qty,
+                pnl=t.pnl,
+                pnl_pct=t.pnl_pct,
+                fees=t.fees,
+                reason=t.reason,
+            )
+        )
+
+    # Equity snapshots: sample every 6 bars to keep DB small.
+    eq = result.equity_curve.iloc[::6]
+    for ts, val in eq.items():
+        store.record_equity(ts.to_pydatetime(), float(val))
+
+    store.mark_heartbeat()
+
+    console.print(
+        f"[green]Seeded {state_path}[/green] with [bold]{len(result.trades)}[/bold] trades, "
+        f"{len(eq)} equity snapshots."
+    )
+    console.print(
+        f"View it with: [bold]crypto-bot dashboard --state {state_path}[/bold]"
+    )
+
+
 if __name__ == "__main__":
     app()

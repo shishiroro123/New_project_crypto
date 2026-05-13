@@ -33,6 +33,10 @@ dev = [
 plot = [
     "matplotlib>=3.8.0",
 ]
+ui = [
+    "streamlit>=1.36.0",
+    "plotly>=5.22.0",
+]
 
 [project.scripts]
 crypto-bot = "crypto_bot.cli:app"

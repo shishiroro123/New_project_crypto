@@ -45,6 +45,7 @@ secrets/
 *.pem
 state.db
 state.sqlite
+data/state*.sqlite*
 
 # OS
 .DS_Store
