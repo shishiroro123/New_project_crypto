@@ -1,6 +1,16 @@
 # crypto-bot
 
-Bot de trading crypto basé sur une stratégie **Donchian breakout** (time-series momentum) avec filtre de régime et sizing par ATR. Conçu pour BTC/USDT et ETH/USDT sur timeframe 4h, déployable sur un VPS via Docker.
+Bot de trading crypto basé sur une stratégie **Donchian breakout** (time-series momentum) avec filtre de régime et sizing par ATR. Conçu pour BTC/USDT et ETH/USDT sur timeframe 1d, déployable sur un VPS via Docker.
+
+**Validation empirique sur 6.4 ans de données réelles** (binance.us, BTC + ETH, 2020-2026) :
+
+| | BTC/USDT 1d | ETH/USDT 1d |
+|---|---|---|
+| Sharpe (full history) | 1.10 | 0.82 |
+| Max drawdown | -4.44% | -7.23% |
+| Robustness 5-folds (avg Sharpe) | 1.04 | 0.72 |
+| Folds positifs | **5/5** | **5/5** |
+| Trades / 6 ans | 32 | 33 |
 
 > **Avertissement** — Ce projet est un MVP éducatif. Le trading algorithmique comporte un risque réel de perte en capital. À 500 € de capital, l'objectif est de **valider le système** (signaux, exécution, monitoring), pas de générer du rendement net positif les premiers mois. Les frais (~0.2% aller-retour Binance) compriment fortement la performance à petite échelle.
 

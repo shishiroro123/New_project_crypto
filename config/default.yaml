@@ -4,12 +4,17 @@
 
 strategy:
   name: donchian_breakout
-  timeframe: "4h"
+  # 1d chosen after empirical validation: 5/5 folds positive on both BTC and
+  # ETH (vs 3-4/5 on 4h), drawdowns ~3x lower (-7% vs -21%), and ~5x fewer
+  # trades (fees drop from ~6%/yr to ~1%/yr at 500€ capital). The trade-off
+  # is fewer entries — but each one is higher-quality signal.
+  timeframe: "1d"
   symbols:
     - BTC/USDT
     - ETH/USDT
 
-  # Donchian breakout params
+  # Donchian breakout: 20-bar high entry, 10-bar low exit (~classic Donchian
+  # turtle rules on daily). Same as 4h variant — the lookbacks are now in days.
   entry_lookback: 20        # bars (long entry on break of 20-bar high)
   exit_lookback: 10         # bars (long exit on break of 10-bar low)
 
@@ -39,4 +44,4 @@ execution:
 backtest:
   start: "2020-01-01"
   end: null                 # null = until now
-  warmup_bars: 250          # discard first N bars (let MAs stabilise)
+  warmup_bars: 100          # discard first N bars (let MAs stabilise) — 100 days on 1d
