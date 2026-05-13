@@ -17,19 +17,29 @@ Stratégies écartées (et pourquoi) : voir le rapport d'analyse dans l'historiq
 
 ```
 src/crypto_bot/
-├── config.py         # Pydantic config (YAML + .env)
-├── logging_setup.py  # structlog (JSON ou console pretty)
+├── config.py          # Pydantic config (YAML + .env)
+├── logging_setup.py   # structlog (JSON ou console pretty)
+├── state.py           # SQLite store (positions, trades, equity, meta)
+├── alerts.py          # TelegramAlerter (no-op si tokens absents)
+├── live_runner.py     # boucle de polling pour paper/testnet/live
+├── walkforward.py     # walk-forward analysis (anchored, OOS)
 ├── data/
-│   ├── exchange.py     # ccxt wrapper + retry exponentiel
-│   └── market_data.py  # fetcher OHLCV + cache parquet incrémental
+│   ├── exchange.py      # ccxt wrapper + retry exponentiel
+│   └── market_data.py   # fetcher OHLCV + cache parquet incrémental
 ├── strategy/
-│   ├── indicators.py   # Donchian, ATR (Wilder), SMA, EMA
-│   └── donchian.py     # signaux Donchian breakout + filtre régime
+│   ├── indicators.py    # Donchian, ATR (Wilder), SMA, EMA
+│   └── donchian.py      # signaux Donchian breakout + filtre régime
 ├── risk/
-│   └── sizing.py       # sizing par risque fixe ATR
+│   └── sizing.py        # sizing par risque fixe ATR
 ├── backtest/
-│   └── runner.py       # backtester vectorisé + métriques (Sharpe, DD, CAGR)
-└── cli.py            # typer CLI : fetch / backtest
+│   └── runner.py        # backtester vectorisé + métriques (Sharpe, DD, CAGR)
+├── execution/
+│   ├── base.py          # interface ExecutorBase (paper / live)
+│   ├── paper.py         # simulateur d'ordres (cohérent avec le backtester)
+│   └── live.py          # exécution réelle Binance via ccxt
+├── news/
+│   └── feeds.py         # CryptoPanic + Binance announcements
+└── cli.py             # typer CLI : fetch / backtest / walkforward / run / news / status
 ```
 
 ## Règles de trading
@@ -61,10 +71,23 @@ cp .env.example .env
 # 3. télécharger les données historiques (5+ ans BTC/ETH 4h + BTC daily)
 crypto-bot fetch --start 2020-01-01
 
-# 4. backtester
+# 4. backtester (single-symbol par défaut → tous les symboles configurés)
 crypto-bot backtest
 
-# 5. tests unitaires
+# 5. walk-forward analysis (anti-overfit) sur BTC/USDT, 5 folds
+crypto-bot walkforward --symbol BTC/USDT --folds 5
+
+# 6. lancer le bot en paper trading (mode défini dans config/default.yaml)
+crypto-bot run --poll 300         # cycle toutes les 5 min
+crypto-bot run --once             # un seul cycle (utile pour debug)
+
+# 7. consulter l'état (positions ouvertes, trades, equity)
+crypto-bot status
+
+# 8. tester les flux news
+crypto-bot news --currencies BTC,ETH
+
+# 9. tests unitaires (22 tests)
 pytest -q
 ```
 
@@ -115,31 +138,49 @@ Tout est centralisé dans `config/default.yaml`. Paramètres clés :
 
 ## Roadmap
 
-État actuel (v0.1) :
-- [x] Fetcher OHLCV avec cache parquet
-- [x] Indicateurs (Donchian, ATR)
-- [x] Générateur de signaux Donchian + filtre régime
-- [x] Sizing par risque fixe ATR
-- [x] Backtester single-symbol avec métriques (Sharpe, DD, CAGR)
-- [x] CLI `fetch` + `backtest`
-- [x] Docker + tests unitaires
+État actuel (v1.0) :
+- [x] Fetcher OHLCV avec cache parquet incrémental
+- [x] Indicateurs (Donchian, ATR, MA200)
+- [x] Générateur de signaux Donchian + filtre régime BTC>MA200
+- [x] Sizing par risque fixe ATR + kill switch drawdown
+- [x] Backtester avec frais, slippage, métriques (Sharpe, DD, CAGR)
+- [x] Walk-forward analysis (anchored OOS, grille de params minimale)
+- [x] Persistance SQLite (positions, trades, equity snapshots, meta)
+- [x] Exécution Paper + Live Binance via ccxt (testnet ou réel)
+- [x] Live runner avec polling, kill switch, signal handling SIGTERM/SIGINT
+- [x] Alertes Telegram (entry/exit/error/daily summary)
+- [x] Module news (CryptoPanic + Binance announcements)
+- [x] CLI complète : fetch / backtest / walkforward / run / news / status
+- [x] Docker + 22 tests unitaires + tests d'intégration end-to-end
 
-À venir (v0.2 et plus) :
-- [ ] Paper trading live (boucle WS + simulateur d'ordres en RAM)
-- [ ] Connecteur testnet Binance via ccxt
-- [ ] Monitoring Telegram (alerts trades + résumé quotidien)
-- [ ] Walk-forward analysis automatisé
-- [ ] Module news/sentiment (CryptoPanic + Binance announcements)
-- [ ] Multi-symbol portfolio runner (capital splitté entre signaux concurrents)
-- [ ] Dashboard Streamlit (P&L live, equity curve, positions ouvertes)
+À venir (v1.1 et plus) :
+- [ ] Multi-symbol portfolio runner (allocation dynamique entre signaux concurrents)
+- [ ] Sentiment scoring NLP sur les news → modulation du sizing
+- [ ] Dashboard Streamlit / Prometheus exporter pour Grafana
+- [ ] WebSocket pour timeframes < 15min
+- [ ] Optimisation bayésienne des params (Optuna) en remplacement de la grille
+- [ ] Monitoring on-chain (whale alerts, flux exchange)
 
 ## Plan de validation avant passage en live
 
-1. **Backtest in-sample** 2020–2023 sur BTC + ETH.
-2. **Walk-forward out-of-sample** 2024–aujourd'hui, sans réoptimisation.
+1. **Backtest in-sample** 2020–2023 sur BTC + ETH (`crypto-bot backtest`).
+2. **Walk-forward OOS** 2024–aujourd'hui sans réoptimisation (`crypto-bot walkforward`). Si OOS Sharpe << IS Sharpe → overfit.
 3. **Sensibilité paramètres** : Donchian 15–30, ATR 10–20. Si l'edge disparaît, c'est de l'overfit.
-4. **Paper trading** 4–8 semaines sur testnet.
-5. **Go-live progressif** : 50–100 € pendant 4 semaines avant le reste du capital.
+4. **Paper trading** 4–8 semaines (`crypto-bot run` avec `execution.mode: paper`).
+5. **Testnet** 2–4 semaines (`execution.mode: testnet` + clés API testnet Binance).
+6. **Go-live progressif** : 50–100 € pendant 4 semaines avant le reste du capital.
+
+## Modes d'exécution
+
+Trois modes pilotés par `config/default.yaml` → `execution.mode` :
+
+| Mode | API keys requises | Données live | Ordres réels | Usage |
+|---|---|---|---|---|
+| `paper` | non | oui (publiques) | non (simulés) | dev & validation |
+| `testnet` | testnet Binance | oui | fake money | dernière étape avant le réel |
+| `live` | clés réelles | oui | oui | production |
+
+Le live runner persiste tout dans `data/state.sqlite` : positions, trades, equity. À chaque redémarrage il reprend l'état précédent (idempotent). `crypto-bot status` affiche un instantané.
 
 ## Licence
 

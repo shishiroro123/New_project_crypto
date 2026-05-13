@@ -1,4 +1,4 @@
-"""CLI: `crypto-bot fetch` / `crypto-bot backtest`."""
+"""CLI commands: fetch / backtest / walkforward / run / news / status."""
 
 from __future__ import annotations
 
@@ -14,11 +14,15 @@ from crypto_bot.backtest.runner import CostModel, run_backtest
 from crypto_bot.config import BotConfig, Secrets
 from crypto_bot.data.exchange import make_binance
 from crypto_bot.data.market_data import fetch_history
+from crypto_bot.live_runner import build_runner
 from crypto_bot.logging_setup import configure as configure_logging
 from crypto_bot.logging_setup import get_logger
+from crypto_bot.news import BinanceAnnouncements, CryptoPanicFeed
 from crypto_bot.risk.sizing import SizingParams
+from crypto_bot.state import StateStore
 from crypto_bot.strategy.donchian import DonchianParams, generate_signals
 from crypto_bot.strategy.indicators import align_regime, regime_filter
+from crypto_bot.walkforward import walk_forward
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
@@ -165,6 +169,169 @@ def backtest(
         )
 
     console.print(results_table)
+
+
+@app.command()
+def walkforward(
+    config: Path = typer.Option(Path("config/default.yaml"), "--config", "-c"),
+    symbol: str = typer.Option("BTC/USDT", "--symbol"),
+    n_folds: int = typer.Option(5, "--folds", min=2, max=20),
+) -> None:
+    """Anchored walk-forward analysis (out-of-sample) for one symbol."""
+    cfg = _load_config(config)
+    secrets = Secrets()
+    data_dir = Path(secrets.data_dir)
+    client = make_binance(secrets, testnet=False)
+
+    start_dt = datetime.fromisoformat(cfg.backtest.start).replace(tzinfo=UTC)
+    end_dt = (
+        datetime.fromisoformat(cfg.backtest.end).replace(tzinfo=UTC) if cfg.backtest.end else None
+    )
+
+    df = fetch_history(client, symbol, cfg.strategy.timeframe, start_dt, end_dt, data_dir)
+    if df.empty:
+        console.print("[red]no data available[/red]")
+        raise typer.Exit(code=1)
+    df = df.iloc[cfg.backtest.warmup_bars :]
+
+    regime = None
+    if cfg.strategy.regime.enabled:
+        ref_df = fetch_history(
+            client,
+            cfg.strategy.regime.reference_symbol,
+            cfg.strategy.regime.reference_timeframe,
+            start_dt,
+            end_dt,
+            data_dir,
+        )
+        regime = regime_filter(ref_df["close"], cfg.strategy.regime.ma_period)
+
+    sizing = SizingParams(
+        risk_per_trade=cfg.risk.risk_per_trade,
+        max_position_pct=cfg.risk.max_position_pct,
+    )
+    cost = CostModel(fee_rate=cfg.execution.fee_rate, slippage_bps=cfg.execution.slippage_bps)
+
+    result = walk_forward(
+        df=df,
+        regime=regime,
+        n_folds=n_folds,
+        sizing=sizing,
+        cost=cost,
+        initial_capital=cfg.risk.initial_capital,
+        timeframe=cfg.strategy.timeframe,
+    )
+
+    folds_table = Table(title=f"Walk-forward folds ({symbol})", show_lines=True)
+    folds_table.add_column("fold")
+    folds_table.add_column("oos period")
+    folds_table.add_column("params (e/x)")
+    folds_table.add_column("IS sharpe")
+    folds_table.add_column("OOS sharpe")
+    folds_table.add_column("OOS return")
+    folds_table.add_column("OOS DD")
+    for i, fold in enumerate(result.folds, start=1):
+        folds_table.add_row(
+            str(i),
+            f"{fold.oos_start:%Y-%m-%d}->{fold.oos_end:%Y-%m-%d}",
+            f"{fold.chosen_params.entry_lookback}/{fold.chosen_params.exit_lookback}",
+            f"{fold.is_metrics.get('sharpe', 0):.2f}",
+            f"{fold.oos_metrics.get('sharpe', 0):.2f}",
+            f"{fold.oos_metrics.get('total_return', 0):.2%}",
+            f"{fold.oos_metrics.get('max_drawdown', 0):.2%}",
+        )
+    console.print(folds_table)
+
+    combined = result.combined_oos.metrics
+    console.print(
+        f"[bold]Combined OOS:[/bold] sharpe={combined.get('sharpe', 0):.2f} "
+        f"return={combined.get('total_return', 0):.2%} "
+        f"max_dd={combined.get('max_drawdown', 0):.2%}"
+    )
+
+
+@app.command()
+def run(
+    config: Path = typer.Option(Path("config/default.yaml"), "--config", "-c"),
+    poll_interval: int = typer.Option(300, "--poll", help="seconds between cycles"),
+    once: bool = typer.Option(False, "--once", help="run a single cycle then exit"),
+    state_path: Path = typer.Option(Path("data/state.sqlite"), "--state"),
+) -> None:
+    """Start the live runner (paper/testnet/live mode set in config)."""
+    cfg = _load_config(config)
+    secrets = Secrets()
+    runner = build_runner(cfg, secrets, store_path=state_path)
+    runner.run(poll_interval=poll_interval, once=once)
+
+
+@app.command()
+def news(
+    symbol_filter: str = typer.Option("BTC,ETH", "--currencies", help="comma list, e.g. BTC,ETH"),
+    cryptopanic_token: str = typer.Option("", "--cryptopanic-token"),
+) -> None:
+    """Fetch latest news items from CryptoPanic + Binance announcements."""
+    ccys = [s.strip() for s in symbol_filter.split(",") if s.strip()]
+    cp = CryptoPanicFeed(auth_token=cryptopanic_token, currencies=ccys).poll()
+    ba = BinanceAnnouncements().poll()
+
+    table = Table(title="Latest news", show_lines=True)
+    table.add_column("source")
+    table.add_column("time")
+    table.add_column("currencies")
+    table.add_column("title")
+    for it in (cp + ba)[-25:]:
+        table.add_row(
+            it.source,
+            it.published_at.strftime("%Y-%m-%d %H:%M"),
+            ",".join(it.currencies),
+            it.title[:120],
+        )
+    console.print(table)
+
+
+@app.command()
+def status(
+    state_path: Path = typer.Option(Path("data/state.sqlite"), "--state"),
+    n: int = typer.Option(10, "--n"),
+) -> None:
+    """Show open positions, latest equity, recent trades."""
+    store = StateStore(state_path)
+    positions = store.all_positions()
+    eq = store.latest_equity()
+    trades = store.recent_trades(n)
+
+    if eq:
+        console.print(f"[bold]Latest equity:[/bold] {eq[1]:.2f} (at {eq[0].isoformat()})")
+    else:
+        console.print("[dim]no equity snapshot yet[/dim]")
+
+    ptable = Table(title="Open positions", show_lines=True)
+    for col in ("symbol", "qty", "entry", "stop", "entry_time"):
+        ptable.add_column(col)
+    for p in positions:
+        ptable.add_row(
+            p.symbol,
+            f"{p.qty:.6f}",
+            f"{p.entry_price:.4f}",
+            f"{p.stop_price:.4f}",
+            p.entry_time.isoformat(),
+        )
+    console.print(ptable)
+
+    ttable = Table(title=f"Last {n} trades", show_lines=True)
+    for col in ("symbol", "entry", "exit", "qty", "pnl", "pnl_pct", "reason"):
+        ttable.add_column(col)
+    for t in trades:
+        ttable.add_row(
+            t.symbol,
+            f"{t.entry_price:.4f}",
+            f"{t.exit_price:.4f}",
+            f"{t.qty:.6f}",
+            f"{t.pnl:+.2f}",
+            f"{t.pnl_pct * 100:+.2f}%",
+            t.reason,
+        )
+    console.print(ttable)
 
 
 if __name__ == "__main__":

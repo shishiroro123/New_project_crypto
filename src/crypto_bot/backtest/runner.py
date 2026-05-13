@@ -171,8 +171,13 @@ def run_backtest(
                 open_trade = None
 
         # Mark-to-market equity for the curve.
-        mtm = equity + (qty * close[t] - (qty * open_trade.entry_price if open_trade else 0.0)
-                        if in_pos and open_trade else 0.0)
+        # `equity` represents cash (initial - fees paid so far + realized PnL).
+        # When in a position we add unrealized PnL = qty * (close - entry).
+        if in_pos and open_trade is not None:
+            unrealized = qty * (close[t] - open_trade.entry_price)
+        else:
+            unrealized = 0.0
+        mtm = equity + unrealized
         equity_curve[t] = mtm
 
         # Risk kill switch.
