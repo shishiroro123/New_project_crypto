@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual envs
+.venv/
+venv/
+env/
+.env
+.envrc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data caches (large, regenerable)
+data/cache/
+data/parquet/
+*.parquet
+*.csv
+!tests/fixtures/*.csv
+
+# Logs
+logs/
+*.log
+
+# Secrets / runtime state
+secrets/
+*.key
+*.pem
+state.db
+state.sqlite
+
+# OS
+.DS_Store
+Thumbs.db

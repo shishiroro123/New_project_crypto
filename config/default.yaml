@@ -1,0 +1,42 @@
+# Strategy configuration
+# All parameters here are deliberately conservative defaults.
+# Validate via backtest BEFORE changing for live.
+
+strategy:
+  name: donchian_breakout
+  timeframe: "4h"
+  symbols:
+    - BTC/USDT
+    - ETH/USDT
+
+  # Donchian breakout params
+  entry_lookback: 20        # bars (long entry on break of 20-bar high)
+  exit_lookback: 10         # bars (long exit on break of 10-bar low)
+
+  # ATR-based stop
+  atr_period: 14
+  atr_stop_multiplier: 2.0  # stop placed at entry - 2*ATR for long
+
+  # Regime filter: only go long if BTC > MA on daily
+  regime:
+    enabled: true
+    reference_symbol: BTC/USDT
+    reference_timeframe: "1d"
+    ma_period: 200
+
+risk:
+  initial_capital: 500.0
+  risk_per_trade: 0.01      # 1% of equity risked per trade
+  max_concurrent_positions: 2
+  max_position_pct: 0.5     # never more than 50% of equity on one position
+  max_drawdown_kill: 0.25   # halt the bot if drawdown exceeds 25%
+
+execution:
+  mode: paper               # paper | testnet | live
+  fee_rate: 0.001           # 0.1% Binance spot taker
+  slippage_bps: 5           # 5 bps assumed slippage on market orders
+
+backtest:
+  start: "2020-01-01"
+  end: null                 # null = until now
+  warmup_bars: 250          # discard first N bars (let MAs stabilise)

@@ -1,0 +1,17 @@
+services:
+  bot:
+    build: .
+    image: crypto-bot:latest
+    container_name: crypto-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config:ro
+    # Default command = print help. Override to run backtests / paper trading.
+    # Examples:
+    #   docker compose run --rm bot fetch --start 2020-01-01
+    #   docker compose run --rm bot backtest
+    command: ["--help"]
