@@ -207,6 +207,9 @@ def run_backtest(
                     qty = 0.0
                     in_pos = False
                     open_trade = None
+                # Reflect the forced flatten on the current bar's equity curve
+                # value, otherwise the chart shows stale mark-to-market.
+                equity_curve[t] = equity
 
     eq_series = pd.Series(equity_curve, index=times, name="equity")
     metrics = compute_metrics(eq_series, timeframe)

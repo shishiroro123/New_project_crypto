@@ -21,8 +21,15 @@ class PaperExecutor(ExecutorBase):
         self._cost = cost
         self._balance: dict[str, float] = {quote: starting_balance}
         self._quote = quote
+        # client_order_id -> previously emitted Fill (idempotency cache)
+        self._seen: dict[str, Fill] = {}
 
     def submit(self, order: OrderRequest) -> Fill:
+        if order.client_order_id and order.client_order_id in self._seen:
+            cached = self._seen[order.client_order_id]
+            log.info("paper.idempotent_replay", cid=order.client_order_id)
+            return cached
+
         if order.side == Side.BUY:
             price = self._cost.buy_price(order.reference_price)
         else:
@@ -49,7 +56,7 @@ class PaperExecutor(ExecutorBase):
             price=price,
             fee=fee,
             timestamp=datetime.now(UTC),
-            order_id=f"paper-{uuid.uuid4().hex[:12]}",
+            order_id=order.client_order_id or f"paper-{uuid.uuid4().hex[:12]}",
         )
         log.info(
             "paper.fill",
@@ -60,6 +67,8 @@ class PaperExecutor(ExecutorBase):
             fee=fee,
             balance=self._balance.get(self._quote, 0.0),
         )
+        if order.client_order_id:
+            self._seen[order.client_order_id] = fill
         return fill
 
     def get_free_quote_balance(self, quote: str = "USDT") -> float:

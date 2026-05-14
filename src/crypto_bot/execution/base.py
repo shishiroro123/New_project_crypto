@@ -30,6 +30,10 @@ class OrderRequest:
     # near this with slippage; live executor ignores it (real fills come from
     # the exchange).
     reference_price: float
+    # Deterministic client-side ID for idempotency. Same cid on retry returns
+    # the cached fill in paper mode, and reuses the exchange-side order in
+    # live mode (Binance: clientOrderId). Empty disables idempotency.
+    client_order_id: str = ""
 
 
 @dataclass(frozen=True)

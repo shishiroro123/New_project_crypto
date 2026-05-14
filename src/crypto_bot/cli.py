@@ -388,6 +388,25 @@ def news(
 
 
 @app.command()
+def unhalt(
+    state_path: Path = typer.Option(Path("data/state.sqlite"), "--state"),
+) -> None:
+    """Clear the bot's halted flag so it resumes trading on next start.
+
+    Run only AFTER you've investigated the kill-switch trigger and decided
+    it's safe to continue.
+    """
+    store = StateStore(state_path)
+    if not store.is_halted():
+        console.print("[yellow]Bot is not halted.[/yellow]")
+        return
+    reason = store.halt_reason() or "(no reason recorded)"
+    console.print(f"[bold]Clearing halt[/bold] (reason was: {reason})")
+    store.unhalt()
+    console.print("[green]Halt cleared. The runner will trade on next start.[/green]")
+
+
+@app.command()
 def status(
     state_path: Path = typer.Option(Path("data/state.sqlite"), "--state"),
     n: int = typer.Option(10, "--n"),

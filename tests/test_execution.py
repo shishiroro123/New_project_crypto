@@ -29,3 +29,42 @@ def test_paper_executor_buy_then_sell_round_trip():
 def test_paper_executor_name():
     ex = PaperExecutor(CostModel(), 1000.0)
     assert ex.name() == "paper"
+
+
+def test_paper_executor_idempotency():
+    """Same client_order_id submitted twice yields the same Fill, no double-debit."""
+    ex = PaperExecutor(CostModel(fee_rate=0.001, slippage_bps=5.0), starting_balance=1000.0)
+    req = OrderRequest("BTC/USDT", Side.BUY, qty=0.01, reference_price=50_000,
+                       client_order_id="bot-BTCUSDT-1700000000000-buy")
+
+    first = ex.submit(req)
+    bal_after_first = ex.get_free_quote_balance("USDT")
+    btc_after_first = ex.balances["BTC"]
+
+    second = ex.submit(req)  # same cid
+    # The second submit must return the cached fill, not place a new order.
+    assert second.order_id == first.order_id
+    assert second.price == first.price
+    assert ex.get_free_quote_balance("USDT") == pytest.approx(bal_after_first)
+    assert ex.balances["BTC"] == pytest.approx(btc_after_first)
+
+
+def test_paper_executor_distinct_cids_both_execute():
+    """Different client_order_ids must both go through (no false-positive dedupe)."""
+    ex = PaperExecutor(CostModel(), starting_balance=1000.0)
+    req_a = OrderRequest("BTC/USDT", Side.BUY, qty=0.005, reference_price=50_000,
+                         client_order_id="cid-a")
+    req_b = OrderRequest("BTC/USDT", Side.BUY, qty=0.005, reference_price=50_000,
+                         client_order_id="cid-b")
+    ex.submit(req_a)
+    ex.submit(req_b)
+    assert ex.balances["BTC"] == pytest.approx(0.01)
+
+
+def test_paper_executor_empty_cid_does_not_dedupe():
+    """Without a cid, every submit is a fresh order."""
+    ex = PaperExecutor(CostModel(), starting_balance=1000.0)
+    req = OrderRequest("BTC/USDT", Side.BUY, qty=0.005, reference_price=50_000)
+    ex.submit(req)
+    ex.submit(req)  # no cid: two separate fills
+    assert ex.balances["BTC"] == pytest.approx(0.01)

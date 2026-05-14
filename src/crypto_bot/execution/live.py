@@ -37,13 +37,22 @@ class LiveExecutor(ExecutorBase):
             raise ValueError(f"qty rounded to zero for {order.symbol}: {order.qty}")
 
         side = "buy" if order.side == Side.BUY else "sell"
-        log.info("live.submit", symbol=order.symbol, side=side, qty=qty)
+        log.info("live.submit", symbol=order.symbol, side=side, qty=qty,
+                 cid=order.client_order_id or None)
+
+        # Idempotency: passing the same clientOrderId twice on Binance returns
+        # the original order rather than creating a duplicate. ccxt normalises
+        # this via the `clientOrderId` param across supported venues.
+        params: dict = {}
+        if order.client_order_id:
+            params["clientOrderId"] = order.client_order_id
 
         resp = self._client.create_order(
             symbol=order.symbol,
             type="market",
             side=side,
             amount=qty,
+            params=params,
         )
 
         # ccxt normalises avg fill price into 'average' (fallback to 'price' or last fill).

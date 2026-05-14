@@ -168,6 +168,35 @@ class StateStore:
                 },
             )
 
+    def record_trade_and_close_position(self, trade: ClosedTrade) -> None:
+        """Atomic: insert the closed trade AND remove the open-position row in a single tx.
+
+        Avoids the "phantom position" state where a crash between the two writes
+        would leave a closed-out trade in the log alongside a still-open position
+        record, causing double-exit attempts on restart.
+        """
+        with self._conn() as c:
+            c.execute("BEGIN")
+            try:
+                c.execute(
+                    """
+                    INSERT INTO trades(symbol, entry_time, exit_time, entry_price, exit_price,
+                                       qty, pnl, pnl_pct, fees, reason)
+                    VALUES (:symbol, :entry_time, :exit_time, :entry_price, :exit_price,
+                            :qty, :pnl, :pnl_pct, :fees, :reason)
+                    """,
+                    {
+                        **asdict(trade),
+                        "entry_time": trade.entry_time.isoformat(),
+                        "exit_time": trade.exit_time.isoformat(),
+                    },
+                )
+                c.execute("DELETE FROM positions WHERE symbol=?", (trade.symbol,))
+                c.execute("COMMIT")
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
+
     def recent_trades(self, limit: int = 50) -> list[ClosedTrade]:
         with self._conn() as c:
             rows = c.execute(
@@ -205,6 +234,11 @@ class StateStore:
             return None
         return datetime.fromisoformat(row["ts"]), row["equity"]
 
+    def peak_equity(self) -> float | None:
+        with self._conn() as c:
+            row = c.execute("SELECT MAX(equity) AS m FROM equity").fetchone()
+        return float(row["m"]) if row and row["m"] is not None else None
+
     # --- meta ---------------------------------------------------------------
 
     def set_meta(self, key: str, value: str) -> None:
@@ -222,3 +256,20 @@ class StateStore:
 
     def mark_heartbeat(self) -> None:
         self.set_meta("last_heartbeat", datetime.now(UTC).isoformat())
+
+    # --- halt state ---------------------------------------------------------
+
+    def halt(self, reason: str = "") -> None:
+        self.set_meta("halted_at", datetime.now(UTC).isoformat())
+        if reason:
+            self.set_meta("halted_reason", reason)
+
+    def unhalt(self) -> None:
+        with self._conn() as c:
+            c.execute("DELETE FROM bot_meta WHERE key IN ('halted_at', 'halted_reason')")
+
+    def is_halted(self) -> bool:
+        return self.get_meta("halted_at") is not None
+
+    def halt_reason(self) -> str | None:
+        return self.get_meta("halted_reason")
