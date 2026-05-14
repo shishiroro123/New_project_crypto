@@ -1,0 +1,13 @@
+# Terraform local state — never commit; contains generated SSH private key.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+
+# Auto-generated SSH private key. NEVER commit.
+crypto-bot.pem
+*.pem
