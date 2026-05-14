@@ -37,9 +37,20 @@ For tighter security, set this to YOUR_IP/32:
 EOT
 }
 
+variable "allowed_dashboard_cidr" {
+  type        = string
+  default     = ""
+  description = <<EOT
+CIDR block allowed to reach the Streamlit dashboard on port 8501.
+Empty string (default) means the rule is NOT created — use an SSH tunnel
+instead. To expose the dashboard to your IP only:
+  terraform apply -var allowed_dashboard_cidr=$(curl -s ifconfig.me)/32
+EOT
+}
+
 variable "repo_url" {
   type        = string
-  default     = "https://github.com/shirawww-debug/New_project_crypto.git"
+  default     = "https://github.com/shishiroro123/New_project_crypto.git"
   description = "Git URL of the bot repo. Must be reachable from the VM."
 }
 

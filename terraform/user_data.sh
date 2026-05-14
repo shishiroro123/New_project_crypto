@@ -65,11 +65,10 @@ fi
 systemctl enable --now docker
 
 # ----- 3. Service user (matches the UID used inside the Dockerfile) ----------
+# On Ubuntu 24.04 AMIs the default `ubuntu` user already owns UID 1000,
+# which matches the `bot:1000` user created inside the container. So we
+# reuse `ubuntu` rather than creating a second UID-1000 user (which fails).
 
-if ! id bot >/dev/null 2>&1; then
-    useradd --create-home --uid 1000 --shell /bin/bash bot
-fi
-usermod -aG docker bot
 usermod -aG docker ubuntu
 
 # ----- 4. Clone the repo into /opt -------------------------------------------
@@ -82,18 +81,18 @@ else
     git -C "$INSTALL_DIR" fetch --depth 1 origin "$REPO_BRANCH"
     git -C "$INSTALL_DIR" reset --hard "origin/$REPO_BRANCH"
 fi
-chown -R bot:bot "$INSTALL_DIR"
+chown -R ubuntu:ubuntu "$INSTALL_DIR"
 
 # ----- 5. Pre-create runtime dirs (mounted into the container) ---------------
 
-sudo -u bot mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs"
+sudo -u ubuntu mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs"
 
 # ----- 6. .env placeholder (operator MUST fill before starting the bot) ------
 
 if [ ! -f "$INSTALL_DIR/.env" ]; then
-    sudo -u bot cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
+    sudo -u ubuntu cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
     chmod 600 "$INSTALL_DIR/.env"
-    chown bot:bot "$INSTALL_DIR/.env"
+    chown ubuntu:ubuntu "$INSTALL_DIR/.env"
 fi
 
 # ----- 7. docker-compose override that runs the actual bot -------------------
@@ -108,12 +107,12 @@ services:
     command: ["run", "--poll", "1800"]
     restart: unless-stopped
 OVERRIDE_EOF
-chown bot:bot "$INSTALL_DIR/docker-compose.override.yml"
+chown ubuntu:ubuntu "$INSTALL_DIR/docker-compose.override.yml"
 
 # ----- 8. Pre-build the image (warm cache so first `up` is fast) -------------
 
 cd "$INSTALL_DIR"
-sudo -u bot docker compose build || \
+sudo -u ubuntu docker compose build || \
     echo "[bootstrap] WARN: docker build failed; you'll need to retry it manually"
 
 # ----- 9. Unattended security upgrades for the base OS -----------------------
@@ -130,7 +129,7 @@ echo "[bootstrap] $(date -u): done"
 echo ""
 echo "Next steps for the operator:"
 echo "  1. ssh into the VM"
-echo "  2. sudo -u bot vim $INSTALL_DIR/.env  (add Binance + Telegram tokens)"
-echo "  3. cd $INSTALL_DIR && sudo -u bot docker compose up -d"
-echo "  4. sudo -u bot docker compose logs -f"
+echo "  2. vim $INSTALL_DIR/.env  (add Binance + Telegram tokens)"
+echo "  3. cd $INSTALL_DIR && docker compose up -d"
+echo "  4. docker compose logs -f"
 echo "============================================================"

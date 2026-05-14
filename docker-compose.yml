@@ -15,3 +15,21 @@ services:
     #   docker compose run --rm bot fetch --start 2020-01-01
     #   docker compose run --rm bot backtest
     command: ["--help"]
+
+  # Phase 1 of the copy-smart-money plan: read-only observer.
+  # Polls Helius for tracked Solana wallets, parses their swap transactions,
+  # and sends Telegram alerts on every detected buy. Never trades.
+  # Required env: HELIUS_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+  # Edit solana_watcher/wallets.yaml to change the tracked list (no rebuild needed).
+  solana_watcher:
+    build:
+      context: .
+      dockerfile: solana_watcher/Dockerfile
+    image: solana-watcher:latest
+    container_name: solana-watcher
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./solana_watcher/wallets.yaml:/app/config/wallets.yaml:ro

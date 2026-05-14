@@ -1,0 +1,39 @@
+# Smart money wallets to track.
+#
+# How to fill this list (curated by you):
+#
+#   1. Go to https://app.cielo.finance/ — free PnL leaderboard for Solana wallets
+#      Sort by 30d PnL, take the top 10-20 with consistent positive ROI.
+#
+#   2. Or https://www.birdeye.so/find-trader — Birdeye lists top traders per token.
+#
+#   3. Or follow @lookonchain on Twitter — they regularly post Solana wallets
+#      that are accumulating early.
+#
+#   4. Or pick wallets that minted/early-bought tokens you know later did well
+#      (use https://solscan.io to inspect early holders).
+#
+# Avoid:
+#   - Exchange hot wallets (Coinbase, Binance, etc.)
+#   - Wallets with millions of tiny transactions (bots / aggregators)
+#   - Brand-new wallets (< 30 days history)
+#
+# Replace the examples below with your own picks. The watcher will read this
+# file on startup; restart the container after edits.
+
+wallets:
+  # --- examples (REPLACE) -------------------------------------------------
+
+  - address: "GJRs4FwHtemZ5ZE9x3FNvJ8TMwitKTh21yxdRPqn7npE"
+    name: "example_1"
+    notes: "Replace with a real wallet you've vetted."
+
+  - address: "BeRUj3h7BqkbdfFU7FBNYbodgf8GCHodzKvF9aVjNNfL"
+    name: "example_2"
+    notes: "Replace with a real wallet you've vetted."
+
+  # --- add yours below ----------------------------------------------------
+
+  # - address: "..."
+  #   name: "shorthand_label"
+  #   notes: "Why you picked this wallet (PnL %, source, etc.)"
