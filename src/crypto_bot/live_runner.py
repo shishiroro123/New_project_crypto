@@ -6,31 +6,25 @@ Why polling instead of WebSocket:
   flaky network/restart cleanly.
 - WS adds complexity (asyncio, reconnect, replay) for zero benefit at this horizon.
 
-Per-cycle behaviour:
-    for each symbol:
-        if open position: check stop via live ticker (intracycle protection)
-        else: check max_concurrent_positions + cooldown after last stop
-        if a NEW bar has closed since last evaluation:
-            compute signals on the full window (regime-aware)
-            resolve position transitions:
-                flat -> long  => submit buy + persist OpenPosition + alert
-                long -> flat  => submit sell + record ClosedTrade (atomic) + alert
-    record equity snapshot
-    if drawdown > max_drawdown_kill: flatten + halt the bot
-    emit heartbeat
+Per-cycle behaviour (see `_cycle`):
+    1. intracycle stops on every open position (always — even when halted)
+    2. mark-to-market equity, then kill switch (BEFORE strategy)
+    3. bar-driven evaluation per symbol (only when not halted)
+    4. heartbeat + optional daily summary
 """
 
 from __future__ import annotations
 
 import re
 import signal
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING
 
-import ccxt
 import pandas as pd
 
 from crypto_bot.alerts import TelegramAlerter
@@ -46,6 +40,9 @@ from crypto_bot.risk.sizing import SizingParams, position_size
 from crypto_bot.state import ClosedTrade, OpenPosition, StateStore
 from crypto_bot.strategy.donchian import DonchianParams, generate_signals
 from crypto_bot.strategy.indicators import align_regime, regime_filter
+
+if TYPE_CHECKING:
+    import ccxt
 
 log = get_logger(__name__)
 
@@ -89,7 +86,7 @@ class LiveRunner:
         store: StateStore,
         executor: ExecutorBase,
         alerter: TelegramAlerter,
-        client: ccxt.Exchange,
+        client: "ccxt.Exchange",
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.cfg = config
@@ -112,22 +109,29 @@ class LiveRunner:
         )
 
         self.stats = RunnerStats(started_at=self.clock())
-        self._stop = False
+        self._stop_event = threading.Event()
         self._last_bar_ts: dict[str, pd.Timestamp] = {}
+        # Per-cycle live-price cache to keep API calls minimal.
+        self._price_cache: dict[str, float] = {}
 
     # -- lifecycle -----------------------------------------------------------
 
     def request_stop(self, *_: object) -> None:
         log.info("runner.stop_requested")
-        self._stop = True
+        self._stop_event.set()
+
+    @property
+    def _stop(self) -> bool:
+        return self._stop_event.is_set()
 
     # -- data ----------------------------------------------------------------
 
     def _fetch_window(self, symbol: str, timeframe: str, bars: int) -> pd.DataFrame:
         tf_secs = _timeframe_to_seconds(timeframe)
-        start = self.clock() - timedelta(seconds=tf_secs * bars)
+        now = self.clock()
+        start = now - timedelta(seconds=tf_secs * bars)
         data_dir = Path(self.secrets.data_dir)
-        return fetch_history(self.client, symbol, timeframe, start, self.clock(), data_dir)
+        return fetch_history(self.client, symbol, timeframe, start, now, data_dir)
 
     def _compute_regime(self) -> pd.Series | None:
         if not self.cfg.strategy.regime.enabled:
@@ -138,21 +142,64 @@ class LiveRunner:
             return None
         return regime_filter(ref["close"], rcfg.ma_period)
 
-    def _live_price(self, symbol: str) -> float | None:
-        """Best-effort last-trade price. Used for intracycle stop and kill flatten."""
+    @staticmethod
+    def _extract_price(ticker: dict | None) -> float | None:
+        if not isinstance(ticker, dict):
+            return None
+        for key in ("last", "close", "bid"):
+            v = ticker.get(key)
+            if v is None:
+                continue
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _prefetch_prices(self, symbols: list[str]) -> None:
+        """Fill the per-cycle price cache. Uses fetch_tickers (batch) when available."""
+        if not symbols:
+            return
+        # Batch fetch when supported (most major venues do).
+        has_batch = bool(getattr(self.client, "has", {}).get("fetchTickers"))
+        if has_batch and len(symbols) > 1:
+            try:
+                tickers = self.client.fetch_tickers(symbols)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("runner.fetch_tickers_failed", error=str(exc))
+                tickers = {}
+            for sym in symbols:
+                px = self._extract_price(tickers.get(sym))
+                if px is not None:
+                    self._price_cache[sym] = px
+            # For symbols missed by the batch, fall back to individual fetch.
+            missing = [s for s in symbols if s not in self._price_cache]
+            for sym in missing:
+                px = self._fetch_single_ticker(sym)
+                if px is not None:
+                    self._price_cache[sym] = px
+        else:
+            for sym in symbols:
+                px = self._fetch_single_ticker(sym)
+                if px is not None:
+                    self._price_cache[sym] = px
+
+    def _fetch_single_ticker(self, symbol: str) -> float | None:
         try:
             ticker = self.client.fetch_ticker(symbol)
         except Exception as exc:  # noqa: BLE001
             log.warning("runner.ticker_failed", symbol=symbol, error=str(exc))
             return None
-        for key in ("last", "close", "bid"):
-            v = ticker.get(key) if isinstance(ticker, dict) else None
-            if v is not None:
-                try:
-                    return float(v)
-                except (TypeError, ValueError):
-                    continue
-        return None
+        return self._extract_price(ticker)
+
+    def _live_price(self, symbol: str) -> float | None:
+        """Per-cycle cached live price. Falls back to a single fetch on miss."""
+        if symbol in self._price_cache:
+            return self._price_cache[symbol]
+        px = self._fetch_single_ticker(symbol)
+        if px is not None:
+            self._price_cache[symbol] = px
+        return px
 
     # -- intracycle stop ----------------------------------------------------
 
@@ -168,13 +215,16 @@ class LiveRunner:
             last=last,
             stop=pos.stop_price,
         )
+        # Deterministic cid keyed on the ENTRY time so retries after a network
+        # glitch produce the same id, letting the exchange dedupe.
+        cid = _client_order_id(pos.symbol, Side.SELL, pos.entry_time, "stop")
         fill = self.executor.submit(
             OrderRequest(
                 symbol=pos.symbol,
                 side=Side.SELL,
                 qty=pos.qty,
                 reference_price=last,
-                client_order_id=_client_order_id(pos.symbol, Side.SELL, self.clock(), "stop"),
+                client_order_id=cid,
             )
         )
         self.stats.fills += 1
@@ -208,7 +258,11 @@ class LiveRunner:
         try:
             until = datetime.fromisoformat(v)
         except ValueError:
+            log.warning("runner.cooldown_parse_failed", symbol=symbol, value=v)
             return False
+        # Make the comparison tz-safe even if a legacy value was stored naive.
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=UTC)
         return self.clock() < until
 
     # -- bar-driven evaluation ----------------------------------------------
@@ -386,7 +440,9 @@ class LiveRunner:
         for pos in self.store.all_positions():
             try:
                 last = self._live_price(pos.symbol) or pos.entry_price
-                cid = _client_order_id(pos.symbol, Side.SELL, self.clock(), reason[:8])
+                # Deterministic cid: keyed on entry_time + reason so a retry of
+                # the same flatten produces the same id (idempotent on Binance).
+                cid = _client_order_id(pos.symbol, Side.SELL, pos.entry_time, reason[:8])
                 fill = self.executor.submit(
                     OrderRequest(
                         symbol=pos.symbol,
@@ -447,6 +503,9 @@ class LiveRunner:
     # -- main loop ----------------------------------------------------------
 
     def run(self, poll_interval: int = 300, once: bool = False) -> None:
+        if poll_interval <= 0:
+            raise ValueError(f"poll_interval must be > 0, got {poll_interval}")
+
         signal.signal(signal.SIGINT, self.request_stop)
         signal.signal(signal.SIGTERM, self.request_stop)
         log.info(
@@ -478,14 +537,22 @@ class LiveRunner:
             if once:
                 return
 
-            for _ in range(poll_interval):
-                if self._stop:
-                    break
-                time.sleep(1)
+            # Single Event.wait(timeout) — wakes immediately on stop, no spin.
+            self._stop_event.wait(timeout=poll_interval)
 
         log.info("runner.stop", cycles=self.stats.cycles, fills=self.stats.fills)
 
     def _cycle(self, cycle_t0: datetime) -> None:
+        # Reset per-cycle caches.
+        self._price_cache.clear()
+
+        # 0) Prefetch live prices once per cycle for every symbol of interest.
+        symbols_of_interest = list(self.cfg.strategy.symbols)
+        for pos in self.store.all_positions():
+            if pos.symbol not in symbols_of_interest:
+                symbols_of_interest.append(pos.symbol)
+        self._prefetch_prices(symbols_of_interest)
+
         # 1) Intracycle stops on existing positions ALWAYS run — even when
         #    halted, we still flatten if a stop has been hit between bars.
         for pos in self.store.all_positions():
@@ -506,9 +573,30 @@ class LiveRunner:
             for symbol in self.cfg.strategy.symbols:
                 self._evaluate_symbol(symbol, regime)
 
+        # 4) Daily summary push (once per UTC day, after the first cycle of the day).
+        self._maybe_send_daily_summary(cycle_t0, equity)
+
         self.store.mark_heartbeat()
         self.stats.cycles += 1
         self.stats.last_cycle = cycle_t0
+
+    def _maybe_send_daily_summary(self, now: datetime, equity: float) -> None:
+        if not self.alerter.enabled:
+            return
+        last_str = self.store.get_meta("last_daily_summary")
+        today = now.date().isoformat()
+        if last_str == today:
+            return
+        # Sum P&L of trades whose exit fell on today's UTC date.
+        recent = self.store.recent_trades(500)
+        day_pnl = sum(t.pnl for t in recent if t.exit_time.date().isoformat() == today)
+        n_today = sum(1 for t in recent if t.exit_time.date().isoformat() == today)
+        n_open = len(self.store.all_positions())
+        try:
+            self.alerter.daily_summary(now, equity, n_today, day_pnl, n_open)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("runner.daily_summary_failed", error=str(exc))
+        self.store.set_meta("last_daily_summary", today)
 
 
 def build_runner(
@@ -517,7 +605,11 @@ def build_runner(
     store_path: Path | str = "data/state.sqlite",
 ) -> LiveRunner:
     store = StateStore(store_path)
-    alerter = TelegramAlerter(secrets.telegram_bot_token, secrets.telegram_chat_id)
+    alerter = TelegramAlerter(
+        bot_token=secrets.telegram_bot_token,
+        chat_id=secrets.telegram_chat_id,
+        ca_bundle=secrets.ca_bundle,
+    )
 
     if config.execution.mode == ExecutionMode.LIVE:
         client = make_exchange(secrets=secrets, testnet=False)

@@ -1,4 +1,8 @@
-"""CLI commands: fetch / backtest / walkforward / run / news / status."""
+"""CLI commands.
+
+Available subcommands: fetch / backtest / walkforward / robustness / run /
+news / status / unhalt / dashboard / seed-demo.
+"""
 
 from __future__ import annotations
 
@@ -368,9 +372,12 @@ def news(
     cryptopanic_token: str = typer.Option("", "--cryptopanic-token"),
 ) -> None:
     """Fetch latest news items from CryptoPanic + Binance announcements."""
+    secrets = Secrets()
     ccys = [s.strip() for s in symbol_filter.split(",") if s.strip()]
-    cp = CryptoPanicFeed(auth_token=cryptopanic_token, currencies=ccys).poll()
-    ba = BinanceAnnouncements().poll()
+    cp = CryptoPanicFeed(
+        auth_token=cryptopanic_token, currencies=ccys, ca_bundle=secrets.ca_bundle,
+    ).poll()
+    ba = BinanceAnnouncements(ca_bundle=secrets.ca_bundle).poll()
 
     table = Table(title="Latest news", show_lines=True)
     table.add_column("source")
@@ -520,7 +527,8 @@ def seed_demo(
     high = close * (1 + rng.uniform(0.001, 0.012, size=n_bars))
     low = close * (1 - rng.uniform(0.001, 0.012, size=n_bars))
     open_ = np.concatenate([[close[0]], close[:-1]])
-    idx = pd.date_range(end=pd.Timestamp.now(tz="UTC"), periods=n_bars, freq="4h")
+    # tz-aware UTC index — keeps consistency with everything stored downstream.
+    idx = pd.date_range(end=pd.Timestamp.now(tz="UTC"), periods=n_bars, freq="4h", tz="UTC")
     df = pd.DataFrame(
         {"open": open_, "high": high, "low": low, "close": close, "volume": 1.0},
         index=idx,
@@ -542,12 +550,20 @@ def seed_demo(
     store = StateStore(state_path)
     store.set_meta("started_at", df.index[0].isoformat())
 
+    def _to_utc(ts) -> datetime:
+        """Pandas Timestamp → tz-aware UTC datetime."""
+        if hasattr(ts, "to_pydatetime"):
+            ts = ts.to_pydatetime()
+        if isinstance(ts, datetime) and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        return ts
+
     for t in result.trades:
         store.record_trade(
             ClosedTrade(
                 symbol="BTC/USDT",
-                entry_time=t.entry_time.to_pydatetime() if hasattr(t.entry_time, "to_pydatetime") else t.entry_time,
-                exit_time=t.exit_time.to_pydatetime() if hasattr(t.exit_time, "to_pydatetime") else t.exit_time,
+                entry_time=_to_utc(t.entry_time),
+                exit_time=_to_utc(t.exit_time),
                 entry_price=t.entry_price,
                 exit_price=t.exit_price,
                 qty=t.qty,
@@ -561,7 +577,7 @@ def seed_demo(
     # Equity snapshots: sample every 6 bars to keep DB small.
     eq = result.equity_curve.iloc[::6]
     for ts, val in eq.items():
-        store.record_equity(ts.to_pydatetime(), float(val))
+        store.record_equity(_to_utc(ts), float(val))
 
     store.mark_heartbeat()
 

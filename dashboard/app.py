@@ -64,10 +64,10 @@ with st.sidebar:
     state_path = st.text_input("State DB path", ARGS.state)
     refresh_every = st.slider("Auto-refresh (s)", 0, 120, 30, step=5,
                               help="0 = manual refresh only")
-    show_open_only = st.checkbox("Show only open positions", value=False)
     n_trades = st.number_input("Trades shown", min_value=10, max_value=500, value=50, step=10)
 
     if st.button("🔄 Refresh now"):
+        st.cache_data.clear()
         st.rerun()
 
     st.divider()
@@ -92,15 +92,16 @@ def load_data(path: str) -> dict:
     latest = store.latest_equity()
     heartbeat = store.get_meta("last_heartbeat")
     started_at = store.get_meta("started_at")
+    halted_at = store.get_meta("halted_at")
+    halt_reason = store.halt_reason()
 
-    # Equity history
-    import sqlite3
-    with sqlite3.connect(p) as c:
-        eq_df = pd.read_sql_query(
-            "SELECT ts, equity FROM equity ORDER BY ts", c, parse_dates=["ts"]
-        )
-    if not eq_df.empty:
+    # Equity history through the StateStore (no raw SQL duplication).
+    history = store.equity_history()
+    if history:
+        eq_df = pd.DataFrame(history, columns=["ts", "equity"])
         eq_df["ts"] = pd.to_datetime(eq_df["ts"], utc=True)
+    else:
+        eq_df = pd.DataFrame(columns=["ts", "equity"])
 
     return {
         "missing": False,
@@ -110,6 +111,8 @@ def load_data(path: str) -> dict:
         "equity_curve": eq_df,
         "heartbeat": heartbeat,
         "started_at": started_at,
+        "halted_at": halted_at,
+        "halt_reason": halt_reason,
     }
 
 
@@ -126,6 +129,15 @@ trades = data["trades"]
 positions = data["positions"]
 eq_df = data["equity_curve"]
 heartbeat = data["heartbeat"]
+halted_at = data.get("halted_at")
+halt_reason = data.get("halt_reason")
+
+# A halted bot is critical info — surface it at the very top, before any KPI.
+if halted_at:
+    st.error(
+        f"🛑 **BOT HALTED** since `{halted_at}`. Reason: `{halt_reason or 'unknown'}`. "
+        "Run `crypto-bot unhalt` after investigating to resume."
+    )
 
 
 # ---------------------------------------------------------------------------

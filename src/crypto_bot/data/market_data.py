@@ -11,8 +11,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-import ccxt
+from typing import TYPE_CHECKING
+
 import pandas as pd
+
+if TYPE_CHECKING:
+    import ccxt
 
 from crypto_bot.data.exchange import fetch_ohlcv
 from crypto_bot.logging_setup import get_logger
@@ -59,7 +63,7 @@ def save_cache(df: pd.DataFrame, data_dir: Path | str, symbol: str, timeframe: s
 
 
 def fetch_history(
-    client: ccxt.binance,
+    client: "ccxt.Exchange",
     symbol: str,
     timeframe: str,
     start: datetime,

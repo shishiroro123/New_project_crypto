@@ -20,7 +20,7 @@ log = get_logger(__name__)
 
 
 class LiveExecutor(ExecutorBase):
-    def __init__(self, client: ccxt.binance) -> None:
+    def __init__(self, client: "ccxt.Exchange") -> None:
         self._client = client
         try:
             self._client.load_markets()

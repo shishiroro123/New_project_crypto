@@ -239,6 +239,12 @@ class StateStore:
             row = c.execute("SELECT MAX(equity) AS m FROM equity").fetchone()
         return float(row["m"]) if row and row["m"] is not None else None
 
+    def equity_history(self) -> list[tuple[datetime, float]]:
+        """Full equity series ordered by timestamp ascending."""
+        with self._conn() as c:
+            rows = c.execute("SELECT ts, equity FROM equity ORDER BY ts").fetchall()
+        return [(datetime.fromisoformat(r["ts"]), float(r["equity"])) for r in rows]
+
     # --- meta ---------------------------------------------------------------
 
     def set_meta(self, key: str, value: str) -> None:

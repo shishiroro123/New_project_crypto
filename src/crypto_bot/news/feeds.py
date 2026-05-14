@@ -45,8 +45,17 @@ class NewsItem:
     wait=wait_exponential(multiplier=1, min=2, max=15),
     reraise=True,
 )
-def _http_get_json(url: str, params: dict[str, Any] | None = None) -> Any:
-    with httpx.Client(timeout=15.0, headers={"User-Agent": "crypto-bot/0.1"}) as client:
+def _http_get_json(
+    url: str,
+    params: dict[str, Any] | None = None,
+    ca_bundle: str = "",
+) -> Any:
+    verify: str | bool = ca_bundle if ca_bundle else True
+    with httpx.Client(
+        timeout=15.0,
+        headers={"User-Agent": "crypto-bot/0.1"},
+        verify=verify,
+    ) as client:
         resp = client.get(url, params=params or {})
         resp.raise_for_status()
         return resp.json()
@@ -57,9 +66,15 @@ class CryptoPanicFeed:
 
     API = "https://cryptopanic.com/api/v1/posts/"
 
-    def __init__(self, auth_token: str = "", currencies: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        auth_token: str = "",
+        currencies: list[str] | None = None,
+        ca_bundle: str = "",
+    ) -> None:
         self.token = auth_token
         self.currencies = currencies or []
+        self.ca_bundle = ca_bundle
 
     def poll(self, since: datetime | None = None) -> list[NewsItem]:
         params: dict[str, Any] = {"public": "true"}
@@ -69,7 +84,7 @@ class CryptoPanicFeed:
             params["currencies"] = ",".join(self.currencies)
 
         try:
-            data = _http_get_json(self.API, params)
+            data = _http_get_json(self.API, params, ca_bundle=self.ca_bundle)
         except Exception as exc:  # noqa: BLE001
             log.warning("news.cryptopanic_failed", error=str(exc))
             return []
@@ -111,15 +126,16 @@ class BinanceAnnouncements:
         "https://www.binance.com/bapi/composite/v1/public/cms/article/list/query"
     )
 
-    def __init__(self, catalog_id: int = 48, page_size: int = 20) -> None:
+    def __init__(self, catalog_id: int = 48, page_size: int = 20, ca_bundle: str = "") -> None:
         self.catalog_id = catalog_id
         self.page_size = page_size
+        self.ca_bundle = ca_bundle
 
     def poll(self, since: datetime | None = None) -> list[NewsItem]:
         params = {"type": "1", "catalogId": str(self.catalog_id), "pageNo": "1",
                   "pageSize": str(self.page_size)}
         try:
-            data = _http_get_json(self.API, params)
+            data = _http_get_json(self.API, params, ca_bundle=self.ca_bundle)
         except Exception as exc:  # noqa: BLE001
             log.warning("news.binance_announcements_failed", error=str(exc))
             return []
